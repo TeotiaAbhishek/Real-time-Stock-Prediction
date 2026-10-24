@@ -1,0 +1,38 @@
+# Settings for data, backtest and models. Override the path with --config.
+
+[data]
+path = "data/finance_data.csv"
+tickers = ["AAPL", "AVGO", "CRM", "CSCO", "IBM", "MSFT", "NOW", "NVDA", "ORCL", "PLTR"]
+history_days = 730          # used by `stock-forecast download`
+
+[backtest]
+initial_train_days = 250    # about one trading year before the first forecast
+refit_every_days = 21       # retrain monthly, forecast one day ahead in between
+models = ["naive", "ridge", "arima", "lstm", "transformer"]
+
+[models]
+window = 7                  # days of history fed to the LSTM and Transformer
+seed = 42
+
+[models.ridge]
+alpha = 10.0
+
+[models.arima]
+order = [5, 0, 2]
+
+[models.lstm]
+hidden_dim = 64
+num_layers = 2
+dropout = 0.2
+
+[models.transformer]
+model_dim = 64
+num_heads = 4
+num_layers = 2
+dropout = 0.2
+
+[training]
+max_epochs = 300
+patience = 20
+learning_rate = 0.001
+val_fraction = 0.15
