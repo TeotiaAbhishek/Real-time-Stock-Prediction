@@ -1,117 +1,127 @@
-# Stock Price Forecasting: Transformer vs LSTM vs ARIMA
+# Stock Forecasting: Transformer vs LSTM vs ARIMA, Backtested Honestly
 
-Can deep learning beat classical time series models at predicting tomorrow's stock price? This project builds an end-to-end pipeline that pulls two years of daily data for the 10 largest technology stocks from Yahoo Finance, engineers market and momentum features, trains a Transformer, an LSTM and an ARIMA model per stock, and compares their forecasts against what the market actually did.
+Can deep learning predict tomorrow's stock return better than simply assuming no change? This project answers that with a leakage-free walk-forward backtest. It covers 10 large US technology stocks, five models and 2,260 out-of-sample forecasts per model, and it states plainly where the models fail.
 
-Built as a team project for the Master of Data Science and Innovation at the University of Technology Sydney.
+Built as a team project for the Master of Data Science and Innovation at the University of Technology Sydney, then rebuilt as a tested Python package.
 
-![NVDA predicted vs actual close prices](charts/NVDA.png)
+![Backtest summary](reports/backtest_summary.png)
 
 ## Results
 
-Forecasts were made for 29 April 2025 (next day) and the following four trading days, then compared with actual closing prices for all 10 stocks.
+Walk-forward backtest from 28 May 2024 to 22 April 2025: 226 trading days × 10 stocks. Every model was retrained monthly (11 refits) on all data before the forecast window, and each forecast uses only information available at the previous close.
 
-| Model | Next-day error (mean absolute %) | Best model on | 5-day error (mean absolute %) |
-|---|---:|---:|---:|
-| Transformer | 1.04% | 5 of 10 stocks | 3.46% |
-| ARIMA (5,0,2) | 1.05% | 2 of 10 stocks | 3.15% |
-| LSTM | 1.07% | 3 of 10 stocks | 3.20% |
-| Naive baseline (yesterday's close) | 0.75% | | |
+| Model | Mean abs. error (next close) | vs naive | Stocks where it beats naive | Direction correct |
+|---|---:|---:|---:|---:|
+| Naive (tomorrow = today) | 1.84% | | | |
+| LSTM | 1.84% | -0.1% | 5 of 10 | **53.0%** (p = 0.002) |
+| ARIMA(5,0,2) | 1.86% | -1.2% | 2 of 10 | 51.8% (p = 0.048) |
+| Ridge regression | 1.89% | -2.8% | 0 of 10 | 50.4% |
+| Transformer | 1.92% | -4.3% | 0 of 10 | 50.6% |
+
+The error on the next close equals the error on the next-day return, so 1.84% means the forecast close was off by 1.84% of the price on an average day. The p-values test direction accuracy against a coin flip (one-sided binomial test).
 
 **What this shows**
 
-- The three models are within 0.03 percentage points of each other on next-day error. The Transformer was most often the best per stock, but no model clearly wins.
-- None of them beat the naive baseline of assuming tomorrow's close equals today's. This is a common and honest result for daily price forecasting: most day-to-day movement is noise that price and volume features can't explain.
-- Error roughly triples over five days, and all models miss sharp moves, such as NVDA's 5% rise on 1–2 May 2025 (chart above).
-- The evaluation covers one week, so treat these numbers as indicative. A rolling backtest over many months is the next step (see [Next steps](#next-steps)).
+- **No model beats the naive forecast on average.** The LSTM ties it and wins on 5 of 10 stocks by under 1%. The Transformer is worst, overfitting about 230 training days per stock.
+- **The LSTM calls direction better than chance (53.0%, p = 0.002), but not better than always predicting "up" (53.8%)** in a period when these stocks mostly rose. Its edge over a coin flip is mostly the market's upward drift.
+- This is the expected result for daily prices of large, liquid stocks: most day-to-day movement is noise that price history can't explain. A model only earns its place if it beats these baselines out of sample, and none of these do convincingly.
 
-Per-stock results are in [`next_day_model_metrics.csv`](next_day_model_metrics.csv), and charts for every stock are in [`charts/`](charts/) (interactive versions in [`charts/charts_plotly/`](charts/charts_plotly/)).
+Per-stock metrics are in [`reports/metrics_by_stock.csv`](reports/metrics_by_stock.csv) and the summary in [`reports/summary.csv`](reports/summary.csv).
 
-## Pipeline
+### What changed from the first version
+
+The original project evaluated one week of forecasts and reported about 1% error for each model. Rebuilding it found and fixed several issues:
+
+| Issue | Fix |
+|---|---|
+| Feature and target scalers were fitted on the full dataset, including the validation period (look-ahead leakage). | Scalers are fitted inside each training window only, which a test checks. |
+| The target was the intraday return (open to close) but was converted to a price from the previous close. | The target is now the close-to-close return, matching the price conversion. |
+| One week of evaluation, with no baseline. | 2,260 forecasts per model with a walk-forward backtest, against naive and "always up" baselines, plus a significance test. |
+| Raw price levels and price-to-index ratios were used as features. | Only stationary features (returns, ranges, volatility, RSI, volume z-score) are used. |
+| Missing index data at the end of the dataset was forward-filled, which produced fake 0% market returns. | Gaps at the end are left empty, and those days are dropped. |
+| Scripts ran on import and read hard-coded CSV paths. | An installable package with a CLI, a config file, tests and CI. |
+
+## How it works
 
 ```text
-Yahoo Finance (10 tech stocks + S&P 500 + NASDAQ, 2 years daily)
+data/finance_data.csv            daily OHLCV for 10 stocks, S&P 500, NASDAQ, analyst rating changes
         |
-Data/data_prep.py        download prices, analyst upgrades/downgrades and indices
-Data/data_cleaning.py    drop empty target rows, fill missing analyst ratings
+features.py      per-stock features known at the close of day t; target = return from t to t+1
         |
-Features/feature_engg.py engineer ~25 features per stock
+backtest.py      walk-forward: train on [start, t), forecast t ... t+20 one day ahead, refit, repeat
         |
-Model/model_building_DL.py   Transformer  (PyTorch)
-Model/lstm.py                LSTM         (PyTorch)
-Model/arima.py               ARIMA(5,0,2) (statsmodels)
+models.py        naive | ridge | ARIMA(5,0,2) | LSTM | Transformer, all behind one fit/predict interface
         |
-Model/predict_*.py       5-day forecasts per model
-test.py                  compare with actual closes, write metrics and Plotly charts
+report.py        per-stock and summary metrics, significance test, chart
 ```
 
-`main.py` runs every step in order.
+**Features (per stock):** 1-day return and four lags, intraday return, high-low range, 5- and 10-day momentum, 5- and 20-day volatility, 14-day RSI, 20-day volume z-score, S&P 500 and NASDAQ returns, return in excess of the S&P 500, analyst rating-change flag and day of week.
 
-## Data
-
-- **Stocks:** the 10 largest companies in Yahoo Finance's technology sector at run time. In this run: AAPL, AVGO, CRM, CSCO, IBM, MSFT, NOW, NVDA, ORCL and PLTR.
-- **Market context:** S&P 500 and NASDAQ Composite closes.
-- **Analyst ratings:** upgrades and downgrades per stock from Yahoo Finance.
-- **Window:** two years of daily OHLCV data, ending the day before the run.
-
-## Features
-
-For each stock the models predict the next day's return, which is converted back to a closing price.
-
-| Group | Features |
-|---|---|
-| Price | daily return, high-low range, intraday volatility |
-| Momentum | 5-day and 10-day returns, 14-day RSI |
-| Volatility | 5-day rolling standard deviation of returns |
-| Lags | returns from the previous 1 to 5 days |
-| Market | S&P 500 and NASDAQ daily returns, stock-to-index price ratios |
-| Analyst | flag for a rating change that day |
-| Calendar | day of week |
-
-## Models
+**Models:**
 
 | Model | Setup |
 |---|---|
-| Transformer | Linear projection to 128 dimensions, 2 encoder layers with 4 attention heads, dropout 0.2, 7-day input window |
-| LSTM | 4 layers, 256 hidden units, 7-day input window |
-| ARIMA | order (5,0,2) on daily returns |
+| Naive | forecasts a 0% return, so tomorrow's close equals today's |
+| Ridge | linear regression with L2 penalty (alpha 10) on the latest day's features |
+| ARIMA | (5,0,2) on daily returns. Parameters are estimated on the training window and then filtered forward for one-step forecasts. |
+| LSTM | 2 layers, 64 hidden units, 7-day input window |
+| Transformer | 2 encoder layers, 4 heads, model dimension 64, learned positional embedding, 7-day window |
 
-Both neural networks use Smooth L1 loss, the Adam optimiser (learning rate 0.001), learning-rate reduction on plateau, early stopping (patience 20) and a time-ordered 80/20 train/validation split, so the model never sees future data during training. Features and targets are standardised per stock, and the fitted scalers are saved with each model.
+Both neural networks use Smooth L1 loss and Adam (learning rate 0.001), with early stopping on the last 15% of each training window. Seeds are fixed, so results are reproducible. All settings live in [`config.toml`](config.toml).
 
 ## How to run
 
+Requires Python 3.11+.
+
 ```bash
-pip install -r requirements.txt
-python main.py     # download data, build features, train all models, forecast
-python test.py     # compare forecasts with actual closes, write metrics and interactive charts
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU build, much smaller
+pip install -e ".[dev]"
+
+stock-forecast backtest                       # full backtest, about 6 minutes on a laptop CPU
+stock-forecast backtest --models naive ridge arima --tickers AAPL NVDA   # quick run
+stock-forecast predict                        # forecast the next trading day with every model
+stock-forecast download                       # refresh data/finance_data.csv from Yahoo Finance
+make test                                     # 21 tests, under 15 seconds
 ```
 
-Trained models for the run above are saved in `models/`, so you can skip training and run the prediction scripts in `Model/` directly.
+The committed dataset (May 2023 to April 2025) makes the results above reproducible offline. `download` replaces it with the latest two years.
 
-Note that `main.py` downloads fresh data, so a new run uses a different date range and may pick different stocks.
+## Testing and CI
+
+GitHub Actions runs ruff, the test suite and a quick backtest on every push and pull request. The tests check that:
+
+- shocking future prices never changes past features (no look-ahead),
+- every model is trained only on rows before its forecast window, and scalers only see training rows,
+- ARIMA one-step forecasts depend only on past returns,
+- metrics match hand calculations, and every model fits and forecasts on synthetic data,
+- on a pure random walk, no model beats naive by more than noise.
 
 ## Project structure
 
 ```text
-├── main.py                      runs the full pipeline
-├── test.py                      evaluation, metrics and charts
-├── Data/                        download and cleaning
-├── Features/feature_engg.py     feature engineering
-├── Model/                       training and prediction for each model
-├── models/                      saved models, scalers and feature lists
-├── charts/                      predicted vs actual charts per stock
-├── next_day_model_metrics.csv   next-day results per stock and model
-└── *_predicted_closes_5days.csv 5-day forecasts per model
+├── stock_forecasting/
+│   ├── data.py         load and download prices
+│   ├── features.py     leakage-free features and target
+│   ├── models.py       naive, ridge, ARIMA, LSTM, Transformer
+│   ├── backtest.py     walk-forward backtest and metrics
+│   ├── predict.py      next-day forecasts
+│   ├── report.py       CSVs and chart
+│   └── cli.py          stock-forecast command
+├── config.toml         data, backtest and model settings
+├── data/               committed price snapshot
+├── reports/            backtest results
+├── tests/
+└── .github/workflows/ci.yml
 ```
 
 ## Next steps
 
-- Rolling-origin backtest over 6 to 12 months instead of one week, with directional accuracy alongside error.
-- Always report a naive baseline, and test whether models add value on returns rather than price level.
-- Add news and sentiment features, which carry information that price history doesn't.
-- Serve forecasts through a small API or Streamlit dashboard and schedule daily retraining.
+- Add information that price history doesn't have, such as news sentiment or earnings dates, and test whether it beats the baselines.
+- Forecast volatility instead of direction. It is far more predictable than returns and useful for risk sizing.
+- Evaluate a trading rule after transaction costs, because a 53% hit rate can still lose money.
 
 ## Team
 
-Abhishek Teotia (model development, feature engineering, forecasting workflow and evaluation), with Muskan Choudhary, Justin Govanxa, Pai Ye, Jintian Liu and Yuzhong Wang.
+Abhishek Teotia (model development, feature engineering, forecasting workflow, evaluation and the production rebuild), with Muskan Choudhary, Justin Govanxa, Pai Ye, Jintian Liu and Yuzhong Wang.
 
-Built for the Master of Data Science and Innovation, University of Technology Sydney. For educational use only, not investment advice.
+For educational use only, not investment advice.

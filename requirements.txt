@@ -1,8 +1,0 @@
-pandas
-numpy
-yfinance
-scikit-learn
-statsmodels
-torch
-joblib
-plotly
